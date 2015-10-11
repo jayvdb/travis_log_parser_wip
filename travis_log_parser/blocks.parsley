@@ -1,0 +1,51 @@
+expr = (block*):blocks (color | EOL)* -> blocks
+
+EOL = ( '\r' | '\n' )
+remaining_line_text = (~EOL anything)+:c -> ''.join(c)
+line = (~EOL anything)+:c EOL -> Line(''.join(c))
+other_line = ~(fold_start | timer_start) line
+blank_line = EOL -> BlankLine()
+command_line = '$ ' (~EOL anything)+:c EOL -> CommandLine(''.join(c))
+rest_of_line = line
+lines = line+:c -> ''.join(c)
+anytext = anything+:c -> ''.join(c)
+
+single_quoted_text = '\'' (~'\'' anything)*:c '\'' -> '\'' + ''.join(c) + '\''
+
+mk = ( 'm' | 'K' )
+color = <'\x1b' (~mk anything)+ mk>:text -> AnsiColour(text)
+
+digit = :x ?(x in '0123456789') -> x
+digits = <digit*>
+
+text_block = ContainerNotice | PythonNoRequirements
+
+envvar_block = RepositoryEnvironmentVariables | TravisYmlEnvironmentVariables
+
+block = worker | text_block | envvar_block | done | color | empty_fold | fold | timer | empty_timer | command_line | command_completed | EOL | other_line
+
+worker = 'Using worker: ' remaining_line_text:worker_id EOL EOL -> Worker(worker_id)
+done = 'Done. Your build exited with ' digits:exit_code '.' EOL? -> Done(exit_code)
+
+command_completed = 'The command "' (~'" exited with' anything)*:command '" exited with ' digits:exit_code '.' color? EOL -> CommandCompleted(''.join(command), exit_code)
+
+ContainerNotice = color 'This job is running on container-based infrastructure, which does not allow use of ' single_quoted_text ', setuid and setguid executables.' color EOL
+                  color 'If you require sudo, add ' single_quoted_text ' to your .travis.yml' color EOL
+                  color 'See http://docs.travis-ci.com/user/workers/container-based-infrastructure/ for details.' color EOL -> ContainerNotice()
+PythonNoRequirements = color? 'Could not locate requirements.txt' color? EOL -> PythonNoRequirements()
+
+TravisYmlEnvironmentVariables = color? 'Setting environment variables from .travis.yml' color? EOL command_line+:lines -> TravisYmlEnvironmentVariables(lines)
+RepositoryEnvironmentVariables = color? 'Setting environment variables from repository settings' color? EOL command_line+:lines -> RepositoryEnvironmentVariables(lines)
+
+fold_start = 'travis_fold:start:' remaining_line_text:fold_id EOL -> fold_id
+fold_end = 'travis_fold:end:' remaining_line_text:fold_id EOL -> fold_id
+empty_fold = fold_start:fold_id fold_end:fold_id -> EmptyFold(fold_id)
+fold = fold_start:fold_id (~fold_end (color | timer | empty_timer | command_line | line))+:content fold_end:fold_id -> Fold(fold_id, content)
+
+remaining_before_colon = (~(':' | EOL) anything)+:c -> ''.join(c)
+
+timer_start = 'travis_time:start:' remaining_line_text:timer_id EOL -> timer_id
+timer_end = 'travis_time:end:' remaining_before_colon:timer_id ':' remaining_line_text:parameters EOL -> (timer_id, parameters)
+empty_timer = timer_start:timer_id timer_end:(timer_id, parameters) -> EmptyTimer(timer_id, parameters)
+timer = timer_start:timer_id (~timer_end (color | command_line | blank_line | line))+:content timer_end:(timer_id, parameters) -> Timer(timer_id, parameters, content)
+
